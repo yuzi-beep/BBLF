@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, expect, mock, spyOn, test } from "bun:test";
+import { afterAll, beforeEach, expect, mock, test } from "bun:test";
 
 import { serve } from "bun";
 
@@ -7,10 +7,6 @@ import type { Database } from "#types/supabase";
 type Row = Database["public"]["Tables"]["translation_cache"]["Row"];
 const rows = new Map<string, Row>();
 const tags: string[] = [];
-const invalidated: string[] = [];
-const callbacks: (() => void)[] = [];
-let requestMemo = new Map<() => unknown, unknown>();
-let requestHeaders = new Headers();
 let databaseAvailable = true;
 let persist = true;
 let calls = 0;
@@ -18,30 +14,11 @@ let reply = "你好";
 let finishReason = "stop";
 let responseStatus = 200;
 let responseDelay = 0;
-let failedRefreshTag: string | undefined;
 
 await mock.module("server-only", () => ({}));
 await mock.module("next/cache", () => ({
   cacheLife: () => {},
   cacheTag: (...values: string[]) => tags.push(...values),
-  revalidateTag: (tag: string, profile: { expire: number }) => {
-    expect(profile).toEqual({ expire: 0 });
-    invalidated.push(tag);
-    if (tag === failedRefreshTag) throw new Error("Controlled refresh failure");
-  },
-}));
-await mock.module("next/headers", () => ({
-  headers: async () => requestHeaders,
-}));
-await mock.module("next/server", () => ({
-  connection: async () => {},
-  after: (callback: () => void) => callbacks.push(callback),
-}));
-await mock.module("react", () => ({
-  cache: (factory: () => unknown) => () => {
-    if (!requestMemo.has(factory)) requestMemo.set(factory, factory());
-    return requestMemo.get(factory);
-  },
 }));
 await mock.module("./translation-storage.service", () => ({
   readTranslationRows: async (keys: string[]) => {
@@ -132,10 +109,6 @@ const input = { context: "Hello", targetLocale: "zh-CN" } as const;
 beforeEach(() => {
   rows.clear();
   tags.length = 0;
-  invalidated.length = 0;
-  callbacks.length = 0;
-  requestMemo = new Map();
-  requestHeaders = new Headers();
   databaseAvailable = true;
   persist = true;
   calls = 0;
@@ -143,7 +116,6 @@ beforeEach(() => {
   finishReason = "stop";
   responseStatus = 200;
   responseDelay = 0;
-  failedRefreshTag = undefined;
   process.env.TRANSLATION_AI_API_KEY = "local-test";
   process.env.TRANSLATION_AI_BASE_URL = `${server.url}v1`;
   process.env.TRANSLATION_AI_MODEL = "local-test";
@@ -166,7 +138,7 @@ test("raw context and locale determine stable independent keys", () => {
   );
 });
 
-test("missing reads attach pending tags; persisted results refresh once after the response", async () => {
+test("missing reads attach pending tags; persisted results no longer attach them", async () => {
   const body = { ...input, context: "World" };
   expect(await readTranslations([input, body])).toEqual([
     { status: "missing" },
@@ -180,12 +152,6 @@ test("missing reads attach pending tags; persisted results refresh once after th
   await Promise.all([ensureTranslation(input), ensureTranslation(body)]);
   await ensureTranslation(input);
   expect(calls).toBe(2);
-  expect(callbacks).toHaveLength(1);
-  expect(invalidated).toHaveLength(0);
-  callbacks[0]();
-  expect(new Set(invalidated).size).toBe(2);
-  callbacks[0]();
-  expect(invalidated).toHaveLength(2);
   tags.length = 0;
   expect(
     (await readTranslations([input, body])).every(
@@ -195,26 +161,23 @@ test("missing reads attach pending tags; persisted results refresh once after th
   expect(tags).toEqual(["translation:all"]);
 });
 
-test("a stale missing read rechecks storage without another model call and repairs its tag", async () => {
+test("a stale missing read rechecks storage without another model call", async () => {
   await readTranslations([input]);
   await ensureTranslation(input);
-  requestMemo = new Map();
-  callbacks.length = 0;
   expect((await ensureTranslation(input)).status).toBe("translated");
   expect(calls).toBe(1);
-  callbacks[0]();
-  expect(invalidated).toEqual([pendingTranslationTag(translationKey(input))]);
 });
 
-test("partial failure does not discard a successful unit's refresh", async () => {
+test("partial failure does not discard a successful unit", async () => {
   await ensureTranslation(input);
   responseStatus = 500;
   expect((await ensureTranslation({ ...input, context: "Other" })).status).toBe(
     "unavailable",
   );
   expect(calls).toBe(2);
-  callbacks[0]();
-  expect(invalidated).toEqual([pendingTranslationTag(translationKey(input))]);
+  expect(await readTranslations([input])).toEqual([
+    { status: "translated", text: "你好" },
+  ]);
 });
 
 test("concurrent callers reuse one claim and generation", async () => {
@@ -226,24 +189,6 @@ test("concurrent callers reuse one claim and generation", async () => {
   ]);
   expect(results.every((result) => result.status === "translated")).toBe(true);
   expect(calls).toBe(1);
-});
-
-test("a failed tag refresh does not prevent another tag from being invalidated", async () => {
-  const body = { ...input, context: "World" };
-  await Promise.all([ensureTranslation(input), ensureTranslation(body)]);
-  failedRefreshTag = pendingTranslationTag(translationKey(input));
-  const log = spyOn(console, "error").mockImplementation(() => {});
-  try {
-    callbacks[0]();
-    expect(new Set(invalidated)).toEqual(
-      new Set([failedRefreshTag, pendingTranslationTag(translationKey(body))]),
-    );
-    expect(log).toHaveBeenCalledTimes(1);
-    callbacks[0]();
-    expect(invalidated).toHaveLength(2);
-  } finally {
-    log.mockRestore();
-  }
 });
 
 test("stored translations remain readable without model configuration", async () => {
@@ -261,11 +206,9 @@ test("stored translations remain readable without model configuration", async ()
   expect(calls).toBe(1);
 });
 
-test("unpersisted results never become successful output or refresh tags", async () => {
+test("unpersisted results never become successful output", async () => {
   persist = false;
   expect((await ensureTranslation(input)).status).toBe("unavailable");
-  callbacks[0]();
-  expect(invalidated).toEqual([]);
 });
 
 test("unavailable database and missing configuration do not invoke AI", async () => {
@@ -277,24 +220,12 @@ test("unavailable database and missing configuration do not invoke AI", async ()
   expect(calls).toBe(0);
 });
 
-test.each([
-  ["purpose", "prefetch"],
-  ["sec-purpose", "prefetch;prerender"],
-])("browser prefetch requests never generate (%s)", async (header, value) => {
-  requestHeaders.set(header, value);
-  expect((await ensureTranslation(input)).status).toBe("unavailable");
-  expect(calls).toBe(0);
-  expect(rows.size).toBe(0);
-});
-
 test.each(["length", "content-filter", "error"])(
   "incomplete finish reason %s is not persisted as success",
   async (reason) => {
     finishReason = reason;
     expect((await ensureTranslation(input)).status).toBe("unavailable");
     expect(rows.get(translationKey(input))?.status).toBe("failed");
-    callbacks[0]();
-    expect(invalidated).toEqual([]);
   },
 );
 
@@ -308,17 +239,13 @@ test("empty and structurally damaged outputs fail; identical output is unchanged
   expect(
     (await ensureTranslation({ ...input, context: "### Hello" })).status,
   ).toBe("unavailable");
-  callbacks[0]();
-  expect(invalidated).toEqual([]);
   rows.clear();
   reply = "Hello";
   expect(await ensureTranslation(input)).toEqual({ status: "unchanged" });
-  callbacks[0]();
-  expect(invalidated).toEqual([pendingTranslationTag(translationKey(input))]);
 });
 
 test.skipIf(process.env.TRANSLATION_TEST_TIMEOUT !== "1")(
-  "a model request exceeding 90 seconds fails without retry or success refresh",
+  "a model request exceeding 90 seconds fails without retry",
   async () => {
     responseDelay = 95_000;
     const started = Date.now();
@@ -327,8 +254,6 @@ test.skipIf(process.env.TRANSLATION_TEST_TIMEOUT !== "1")(
     expect(Date.now() - started).toBeLessThan(94_000);
     expect(calls).toBe(1);
     expect(rows.get(translationKey(input))?.status).toBe("failed");
-    callbacks[0]();
-    expect(invalidated).toEqual([]);
   },
   100_000,
 );

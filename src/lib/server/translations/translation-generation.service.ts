@@ -3,8 +3,9 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { generateText } from "ai";
 import { z } from "zod";
 
+import type { TranslationInput } from "#lib/shared/translations/translation.type";
+
 import { needsNoTranslation, validTranslation } from "./translation.helper";
-import type { TranslationInput } from "./translation.type";
 
 const configuration = z.object({
   apiKey: z.string().trim().min(1),

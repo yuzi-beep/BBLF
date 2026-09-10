@@ -44,28 +44,33 @@ persistent key is `translation:v1:{SHA256(raw context)}:{targetLocale}`.
 with `cacheLife("minutes")` and the maintenance tag `translation:all`. Each
 missing result adds `translation:pending:{translationKey}`. Saved translations
 and explicit `unchanged` results participate in prerendering, while missing
-units render their original text and pending indicator as independent Suspense
-fallbacks.
-The Suspense boundaries remain mounted for saved results too, so a cached shell
-and its resumed render keep the same boundary structure after invalidation.
+units include the original text and pending indicator in the static HTML.
+The page never generates translations or waits for AI during rendering.
 
-`ensureTranslation` waits for `connection()` outside the cache scope, rejects
-prefetch generation, and rechecks storage without the Next.js read cache. It
+After hydration, `TranslatedPost` calls `usePostTranslation` separately for
+the title and body. Each missing unit requests `POST /api/translations/posts`
+independently. The browser adapter handles HTTP;
+shared Zod schemas define the request and result. The endpoint validates the
+post ID, unit kind, source context, and target locale. It reads the current
+public post and rejects hidden/missing posts or a changed source before any
+translation lookup or generation. Prefetch requests cannot generate translations.
+The endpoint owns request validation and cache invalidation; these concerns do
+not belong to the generation service.
+
+`ensureTranslation` rechecks storage without the Next.js read cache. It
 claims the key atomically, generates once, and returns success only after a
 token-guarded write succeeds. Other callers wait at most 95 seconds for an
 existing claim. Missing data, failed generation, and unpersisted results stay
 explicit; the display layer owns the original-text fallback.
 
-A React `cache` factory creates one refresh collector per request. It owns a
-`Set` of pending tags and registers one `after()` callback. Successful writes
-and already-persisted results found behind a stale miss add their pending tag.
-After the response, each collected tag is expired with
-`revalidateTag(tag, { expire: 0 })`; a failed invalidation does not stop the
-others, and the set is cleared afterward. No invalidation happens during
-rendering or inside `use cache`. There is no process-global completion flag,
-database refresh marker, or translation webhook. Subsequent requests rebuild
-the cache; reads that find results no longer attach pending tags. Time-based
-revalidation is the recovery path if this callback is interrupted or fails.
+After a successful write or a persisted result found behind a stale miss, the
+endpoint calls `revalidateTag(tag, { expire: 0 })` for that context's pending
+tag. A failed invalidation is logged without discarding the saved result.
+The current browser uses the returned result directly. The next server request
+rebuilds the static output from storage, and later visits can reuse it without
+client translation requests. Reads that find results no longer attach pending
+tags. No invalidation happens during rendering or inside `use cache`.
+Time-based revalidation recovers from an interrupted or failed invalidation.
 
 `translation_cache` has RLS and service-role-only table/RPC grants, no post
 foreign key, and no automatic TTL for successful results. Claim tokens and a
@@ -83,10 +88,32 @@ link targets, GFM structure, and directive names/attributes. Empty output,
 non-`stop` completions, and damaged structure fail. This is limited structural
 validation, not a guarantee of semantic accuracy or complete format support.
 
-Each client translation unit mounts only its displayed version. Its local
-toggle updates the body renderer, heading outline, and copy payload together
-without a request or locale change. Other browsers' previously cached pages
-are not actively invalidated.
+The client post is keyed by post, locale, and both original contexts, so
+navigation or source changes reset its requests and display state. Request
+hooks abort abandoned requests and ignore their results. Completed translations
+update existing renderers instead of replacing Suspense fallbacks; saved
+results from new server props take precedence over local request state.
+Other browsers' previously cached pages are not actively invalidated.
+
+Display behavior lives in `src/components/features/translations`, separately
+from fetching. `useTranslationDisplay(results)` owns only the original/translated
+choice for one content block. Availability and progress are derived from the
+results; `getText(original, result)` selects the displayed text. One hook call
+groups an article's title and body, while separate calls provide independent
+choices for independent blocks. Later results respect the existing choice.
+The owning component should use a key based on content identity, source, and
+locale when those changes must reset the choice.
+
+`TranslationToggle` is a controlled presentation component taking
+`showOriginal`, `onToggle`, and `className`. It has no fetching, positioning,
+or global state. Callers can place it in their own action area or use a custom
+button with the same hook. The post positions it absolutely beside the existing
+copy action in a fixed-height row, so adding/removing it does not move content
+or change text width. Its stable label and pressed state indicate whether the
+original is selected. Only the displayed content is mounted; title, body,
+heading outline, and copy payload follow the same choice without a request or
+locale change. Author/date/tags remain server-rendered children of the client
+post.
 
 ## Internationalization
 

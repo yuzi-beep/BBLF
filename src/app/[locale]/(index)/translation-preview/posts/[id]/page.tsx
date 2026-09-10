@@ -2,26 +2,16 @@ import { ArrowLeft, Calendar, User } from "lucide-react";
 import type { Metadata } from "next";
 import { cacheTag } from "next/cache";
 import { notFound } from "next/navigation";
-import { connection } from "next/server";
-import { Suspense } from "react";
 
 import Link from "#components/shared/link.component";
 import ScrollToTopButton from "#components/shared/scroll-to-top-button.component";
 import { CACHE_TAGS } from "#lib/server/cache";
 import { getLocale, getScopedT } from "#lib/server/i18n";
-import {
-  ensureTranslation,
-  readTranslations,
-} from "#lib/server/translations/translation.service";
+import { readTranslations } from "#lib/server/translations/translation.service";
 import { fetchPost, fetchPosts } from "#lib/shared/services";
 import { formatTime } from "#lib/shared/utils/date.helper";
 
-import {
-  TranslationUnit,
-  type TranslationUnitProps,
-} from "./_components/translation-unit.component";
-
-export const maxDuration = 120;
+import { TranslatedPost } from "./_components/translated-post.component";
 
 const getPost = async (id: string) => {
   "use cache";
@@ -51,27 +41,6 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   };
 }
 
-async function PendingTranslation(props: TranslationUnitProps) {
-  await connection();
-  const result = await ensureTranslation({
-    context: props.original,
-    targetLocale: props.locale,
-  });
-  return <TranslationUnit {...props} result={result} />;
-}
-
-function TranslationBoundary(props: TranslationUnitProps) {
-  return (
-    <Suspense fallback={<TranslationUnit {...props} />}>
-      {props.result.status === "missing" ? (
-        <PendingTranslation {...props} />
-      ) : (
-        <TranslationUnit {...props} />
-      )}
-    </Suspense>
-  );
-}
-
 export default async function TranslationPreviewPage({ params }: Props) {
   const post = await getPost((await params).id);
   if (!post || post.status !== "show") notFound();
@@ -84,14 +53,15 @@ export default async function TranslationPreviewPage({ params }: Props) {
   ]);
   return (
     <article className="mx-auto flex w-full flex-1 flex-col px-4 pt-10 pb-10">
-      <header>
-        <TranslationBoundary
-          key={post.title}
-          original={post.title}
-          locale={locale}
-          kind="title"
-          result={titleResult}
-        />
+      <TranslatedPost
+        key={JSON.stringify([post.id, locale, post.title, content])}
+        postId={post.id}
+        title={post.title}
+        body={content}
+        locale={locale}
+        initialTitleResult={titleResult}
+        initialBodyResult={bodyResult}
+      >
         <div className="mt-4 flex flex-wrap items-center gap-4 text-sm text-gray-500 dark:text-gray-400">
           {post.author && (
             <span className="flex items-center gap-1">
@@ -118,15 +88,7 @@ export default async function TranslationPreviewPage({ params }: Props) {
             ))}
           </div>
         )}
-      </header>
-      <hr className="my-8 border-gray-200 dark:border-gray-800" />
-      <TranslationBoundary
-        key={content}
-        original={content}
-        locale={locale}
-        kind="body"
-        result={bodyResult}
-      />
+      </TranslatedPost>
       <footer className="mt-auto">
         <hr className="my-8 border-gray-200 dark:border-gray-800" />
         <div className="flex items-center justify-between">

@@ -1,8 +1,10 @@
 import "server-only";
 import { makeAdminClient } from "#lib/server/supabase.client";
+import type {
+  TranslationInput,
+  TranslationResult,
+} from "#lib/shared/translations/translation.type";
 import type { Database } from "#types/supabase";
-
-import type { TranslationInput, TranslationResult } from "./translation.type";
 
 type Row = Database["public"]["Tables"]["translation_cache"]["Row"];
 

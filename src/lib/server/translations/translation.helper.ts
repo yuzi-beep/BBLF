@@ -9,7 +9,7 @@ import remarkGfm from "remark-gfm";
 import remarkParse from "remark-parse";
 import { unified } from "unified";
 
-import type { TranslationInput } from "./translation.type";
+import type { TranslationInput } from "#lib/shared/translations/translation.type";
 
 const parser = unified().use(remarkParse).use(remarkGfm).use(remarkDirective);
 const toSimplified = Converter({ from: "t", to: "cn" });

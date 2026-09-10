@@ -129,6 +129,13 @@ export const dictionary = {
     backToPosts: "Back to Posts",
     tableOfContents: "Contents",
   },
+  translation: {
+    original: "Original",
+    showOriginal: "Show original",
+    showTranslation: "Show translation",
+    pending: "Translating…",
+    unavailable: "Translation unavailable",
+  },
   thoughtCard: {
     preview: "preview",
     imageAlt: "Thought image {index}",

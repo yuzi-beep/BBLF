@@ -125,6 +125,13 @@ export default defineDictionary({
     backToPosts: "返回文章列表",
     tableOfContents: "目录",
   },
+  translation: {
+    original: "原文",
+    showOriginal: "显示原文",
+    showTranslation: "显示译文",
+    pending: "翻译中…",
+    unavailable: "翻译暂不可用",
+  },
   thoughtCard: {
     preview: "预览",
     imageAlt: "想法配图 {index}",

@@ -36,12 +36,18 @@ link them to an issue or a relevant file when possible.
 
 ## Translation preview
 
+- [ ] When comments are added, give each comment its own `useTranslationDisplay`
+      instance and place its original toggle in the comment action area. Keep
+      comment translation requests scoped to public comment content; the
+      current endpoint accepts posts only.
 - [ ] Evaluate a durable background worker if translation must complete despite
       disconnected requests or platform termination. The current implementation
       in `src/lib/server/translations` recovers through leases and later visits.
 - [ ] Extend format validation beyond the current Markdown/GFM/directive subset
       only as real content requires it; add regression fixtures for new formats
       and review cases where structurally valid output omits or mistranslates prose.
-- [ ] Review real-provider translation quality in both locales after configuring
-      `TRANSLATION_AI_API_KEY`, `TRANSLATION_AI_BASE_URL`, and
-      `TRANSLATION_AI_MODEL`. Local mock responses validate behavior only.
+- [ ] Review real-provider translation quality on representative Chinese and
+      English posts, especially mixed-language prose and directives. Basic
+      English-to-Chinese Markdown, independent completion, and static cache
+      reuse were verified with the configured provider; broader editorial
+      quality still needs review.

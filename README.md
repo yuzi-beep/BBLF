@@ -172,10 +172,16 @@ linked from navigation or included in a sitemap. Existing post pages, editing,
 and webhooks are unchanged. Metadata always uses the original post.
 
 The title and complete Markdown body translate independently. Each initially
-shows the original with a translating indicator when no saved result exists,
-then streams its result into the page. Each translated unit has its own
-original/translation toggle; switching is local and keeps the current locale.
-The body outline and copy button follow the displayed version.
+shows the original with a translating indicator when no saved result exists.
+The document response finishes without waiting for AI. After hydration, each
+missing unit requests its translation through `POST /api/translations/posts`
+and updates in place. Saved results are included in the static HTML and need
+no client translation request. One compact original toggle controls the title
+and body together. It sits beside the existing copy action, outside document
+flow, so its presence does not move the article or change line wrapping.
+Switching is local and keeps the current locale. The body outline and copy
+button follow the displayed version. Choosing the original also applies to
+translations that finish later.
 
 Configure an OpenAI-compatible **Chat Completions** endpoint in your local
 environment file (or deployment environment), then restart the server:
@@ -190,7 +196,7 @@ TRANSLATION_AI_MODEL=
 `https://your-provider.example/v1`, without `/chat/completions`. These values
 are read only when generating; builds and saved translations work without
 them. Missing configuration, provider failures, invalid output, and database
-outages show the original with “Translation temporarily unavailable”. A
+outages show the original with “Translation unavailable”. A
 confident local language match or an identical model response is saved as
 `unchanged` and has no toggle. Traditional Chinese still requires conversion
 for `zh-CN`; short or ambiguous text is sent through normal translation.
@@ -206,8 +212,9 @@ seconds. Claims have a 120-second lease and failures a 30-second cooldown.
 
 Next.js caches batch reads for minutes. Missing results receive temporary
 `translation:pending:{translationKey}` tags. After a request persists or
-rediscovers a result, one request-scoped `after()` callback expires those tags.
-Subsequent requests rebuild the static output with translations. Time-based
+rediscovers a result, the translation endpoint expires its pending tag before
+returning the result. The next server request rebuilds the static output with
+saved translations; subsequent requests can reuse that output. Time-based
 revalidation recovers from an interrupted response or failed refresh. A brief
 refresh window is expected; already cached pages in other browsers are not
 actively cleared. The admin “revalidate all” operation includes the shared
@@ -274,9 +281,9 @@ auth roles, cache invalidation, or light/dark and mobile/desktop layouts.
 
 ### Translation verification
 
-The service tests use a local Chat Completions endpoint and cover temporary
-tags, delayed concurrent requests, partial failures, stale misses, missing
-configuration, prefetch guards, language detection, and Markdown validation:
+The existing service tests use a local Chat Completions endpoint and cover
+temporary tags, concurrent requests, partial failures, stale misses, missing
+configuration, language detection, and Markdown validation:
 
 ```bash
 bun run test src/lib/server/translations
@@ -300,7 +307,21 @@ These tests reject remote hosts and the usual local database port `54322`.
 They remove only the temporary translation rows they create. Without this
 variable, database integration tests are skipped.
 
-For browser and production checks, run `bun scripts/translations/mock-ai.ts`.
+For browser verification, use the configured translation provider and an
+isolated local database. Open a public post with no saved translation and
+check that the document finishes loading while the two translation POSTs are
+pending. Verify independent completion, a single toggle switching the title,
+body, outline, and copy payload together, and navigation away while a request
+is pending. Choose the original while one unit is still pending and confirm
+its completion does not switch the display back. At narrow and wide viewport
+sizes, hiding the toggle should leave content and copy-button bounds unchanged.
+Reload after completion: the
+initial HTML should contain the saved translations, with no translation POSTs.
+Builds and prefetches must not generate translations. The endpoint rejects
+hidden/missing posts, unsupported locales, and a source that no longer matches
+the public post. Repeat the cached check after restarting the production server.
+
+For optional controlled-delay checks, run `bun scripts/translations/mock-ai.ts`.
 Point the app at the isolated database and set the three AI values to
 `local-test`, `http://127.0.0.1:4318/v1`, and `local-test`, respectively. Configure
 responses with `POST http://127.0.0.1:4318/__control`:
@@ -315,7 +336,7 @@ responses with `POST http://127.0.0.1:4318/__control`:
 Each response also accepts `status` (default `200`) and `finishReason` (default
 `stop`). `GET /__calls` returns the requested contexts; posting new controls
 clears the call history. Unconfigured contexts fail explicitly. Use delays to
-observe independent Suspense completion, then reload after the response to
+observe independent translation completion, then reload after the response to
 verify a static translated shell with no new model calls. Check original and
 translated outlines/copy, hidden posts, build/prefetch call counts, and reuse
 after a process restart. Real provider translation quality still needs review
