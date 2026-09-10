@@ -61,10 +61,13 @@ async function PendingTranslation(props: TranslationUnitProps) {
 }
 
 function TranslationBoundary(props: TranslationUnitProps) {
-  if (props.result.status !== "missing") return <TranslationUnit {...props} />;
   return (
     <Suspense fallback={<TranslationUnit {...props} />}>
-      <PendingTranslation {...props} />
+      {props.result.status === "missing" ? (
+        <PendingTranslation {...props} />
+      ) : (
+        <TranslationUnit {...props} />
+      )}
     </Suspense>
   );
 }

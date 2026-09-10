@@ -33,3 +33,15 @@ link them to an issue or a relevant file when possible.
       browser verification. The naming refactor passed compilation and ordinary
       Markdown rendering checks; the existing local posts did not cover every
       directive or external preview service.
+
+## Translation preview
+
+- [ ] Evaluate a durable background worker if translation must complete despite
+      disconnected requests or platform termination. The current implementation
+      in `src/lib/server/translations` recovers through leases and later visits.
+- [ ] Extend format validation beyond the current Markdown/GFM/directive subset
+      only as real content requires it; add regression fixtures for new formats
+      and review cases where structurally valid output omits or mistranslates prose.
+- [ ] Review real-provider translation quality in both locales after configuring
+      `TRANSLATION_AI_API_KEY`, `TRANSLATION_AI_BASE_URL`, and
+      `TRANSLATION_AI_MODEL`. Local mock responses validate behavior only.

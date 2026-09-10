@@ -22,8 +22,11 @@ export const pendingTranslationTag = (key: string) =>
 
 function naturalText(node: RootContent): string {
   if (node.type === "text") return node.value;
-  if ("children" in node) return node.children.map(naturalText).join(" ");
-  return "";
+  return [
+    "alt" in node ? node.alt : "",
+    "title" in node ? node.title : "",
+    "children" in node ? node.children.map(naturalText).join(" ") : "",
+  ].join(" ");
 }
 
 export function needsNoTranslation({

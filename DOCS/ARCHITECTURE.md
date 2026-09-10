@@ -28,6 +28,66 @@ Post changes also invalidate the individual post tag. The admin-only
 `/api/admin/cache/revalidate-all` endpoint expires all known content tags
 immediately. These paths and cached consumers share the same tag definitions.
 
+## Post Translation Preview
+
+`/[locale]/translation-preview/posts/[id]` reads only public posts through the
+existing anonymous query and post cache tag. It generates static parameters
+for public posts and marks original-only metadata `noindex`. Neither the posts
+table nor the existing post route, navigation, or webhook changes for this pilot.
+
+`src/lib/server/translations` is server-only. Its input is just the original
+`context` and `targetLocale`; callers do not supply a post ID, source language,
+or content format. A title and a complete body are separate contexts. The
+persistent key is `translation:v1:{SHA256(raw context)}:{targetLocale}`.
+
+`readTranslation`/`readTranslations` only read. Batch reads run in `use cache`
+with `cacheLife("minutes")` and the maintenance tag `translation:all`. Each
+missing result adds `translation:pending:{translationKey}`. Saved translations
+and explicit `unchanged` results participate in prerendering, while missing
+units render their original text and pending indicator as independent Suspense
+fallbacks.
+The Suspense boundaries remain mounted for saved results too, so a cached shell
+and its resumed render keep the same boundary structure after invalidation.
+
+`ensureTranslation` waits for `connection()` outside the cache scope, rejects
+prefetch generation, and rechecks storage without the Next.js read cache. It
+claims the key atomically, generates once, and returns success only after a
+token-guarded write succeeds. Other callers wait at most 95 seconds for an
+existing claim. Missing data, failed generation, and unpersisted results stay
+explicit; the display layer owns the original-text fallback.
+
+A React `cache` factory creates one refresh collector per request. It owns a
+`Set` of pending tags and registers one `after()` callback. Successful writes
+and already-persisted results found behind a stale miss add their pending tag.
+After the response, each collected tag is expired with
+`revalidateTag(tag, { expire: 0 })`; a failed invalidation does not stop the
+others, and the set is cleared afterward. No invalidation happens during
+rendering or inside `use cache`. There is no process-global completion flag,
+database refresh marker, or translation webhook. Subsequent requests rebuild
+the cache; reads that find results no longer attach pending tags. Time-based
+revalidation is the recovery path if this callback is interrupted or fails.
+
+`translation_cache` has RLS and service-role-only table/RPC grants, no post
+foreign key, and no automatic TTL for successful results. Claim tokens and a
+120-second lease prevent concurrent writers; only the current unexpired token
+can finish. Failed work has a 30-second cooldown. If the database cannot be read
+or claimed, no AI request is made. A later visit can recover an expired lease;
+this is request-bound work, not a durable background queue.
+
+Language detection uses natural-language Markdown text, image alternative text,
+and link titles, excluding code and destinations. Conservative `franc-min`
+matches can skip generation; `opencc-js` also checks simplified Chinese.
+Otherwise the AI SDK calls an OpenAI-compatible Chat Completions endpoint with
+a 90-second timeout and no retries. Markdown AST comparisons protect code,
+link targets, GFM structure, and directive names/attributes. Empty output,
+non-`stop` completions, and damaged structure fail. This is limited structural
+validation, not a guarantee of semantic accuracy or complete format support.
+
+Each client translation unit mounts only its displayed version. Its local
+toggle updates the body renderer, heading outline, and copy payload together
+without a request or locale change. Other browsers' previously cached pages
+are not actively invalidated.
+
 ## Internationalization
 
 `#i18n` uses conditional exports in `package.json`: Server Components read

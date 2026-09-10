@@ -48,10 +48,10 @@ export async function readTranslation(
 export async function ensureTranslation(
   input: TranslationInput,
 ): Promise<TranslationResult> {
+  // Next.js prefetches stop here; its internal Flight headers are hidden by headers().
   await connection();
   const requestHeaders = await headers();
   if (
-    requestHeaders.has("next-router-prefetch") ||
     requestHeaders.get("purpose") === "prefetch" ||
     requestHeaders.get("sec-purpose")?.includes("prefetch")
   ) {

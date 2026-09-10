@@ -164,6 +164,57 @@ The renderer also supports custom directives such as:
 - `::card{title="..." tone="info"}` for callout-style content blocks
 - `:meta{url="https://..."}` for URL metadata cards
 
+## Post Translation Preview
+
+Open `/{locale}/translation-preview/posts/{id}` with a public post UUID and
+either `en-US` or `zh-CN`. This experimental page is marked `noindex` and is not
+linked from navigation or included in a sitemap. Existing post pages, editing,
+and webhooks are unchanged. Metadata always uses the original post.
+
+The title and complete Markdown body translate independently. Each initially
+shows the original with a translating indicator when no saved result exists,
+then streams its result into the page. Each translated unit has its own
+original/translation toggle; switching is local and keeps the current locale.
+The body outline and copy button follow the displayed version.
+
+Configure an OpenAI-compatible **Chat Completions** endpoint in your local
+environment file (or deployment environment), then restart the server:
+
+```dotenv
+TRANSLATION_AI_API_KEY=
+TRANSLATION_AI_BASE_URL=
+TRANSLATION_AI_MODEL=
+```
+
+`TRANSLATION_AI_BASE_URL` is the API base, for example
+`https://your-provider.example/v1`, without `/chat/completions`. These values
+are read only when generating; builds and saved translations work without
+them. Missing configuration, provider failures, invalid output, and database
+outages show the original with “Translation temporarily unavailable”. A
+confident local language match or an identical model response is saved as
+`unchanged` and has no toggle. Traditional Chinese still requires conversion
+for `zh-CN`; short or ambiguous text is sent through normal translation.
+
+`supabase/schemas/05_translations.sql` defines a separate, service-role-only
+`translation_cache` table and atomic claim/finish functions. Apply this schema
+through your normal database deployment workflow before using the preview.
+Results have no automatic TTL. The key hashes the full, unmodified context
+plus the target locale and an internal rule version; changing a title does not
+regenerate its body, and changing models does not discard saved translations.
+The model timeout is 90 seconds with no SDK retries; the route allows 120
+seconds. Claims have a 120-second lease and failures a 30-second cooldown.
+
+Next.js caches batch reads for minutes. Missing results receive temporary
+`translation:pending:{translationKey}` tags. After a request persists or
+rediscovers a result, one request-scoped `after()` callback expires those tags.
+Subsequent requests rebuild the static output with translations. Time-based
+revalidation recovers from an interrupted response or failed refresh. A brief
+refresh window is expected; already cached pages in other browsers are not
+actively cleared. The admin “revalidate all” operation includes the shared
+`translation:all` tag; it refreshes Next.js reads, without deleting database
+translations. See [Architecture](./DOCS/ARCHITECTURE.md#post-translation-preview)
+for the request and storage boundaries.
+
 ## Scripts
 
 - `bun run dev` - start the Next.js dev server
@@ -220,6 +271,55 @@ For routing, cache, or server/client integration changes, also check a productio
 build with `bun run build`. CI does not build the app. There is currently no
 browser test suite; verify affected behavior in the running app: locales and
 auth roles, cache invalidation, or light/dark and mobile/desktop layouts.
+
+### Translation verification
+
+The service tests use a local Chat Completions endpoint and cover temporary
+tags, delayed concurrent requests, partial failures, stale misses, missing
+configuration, prefetch guards, language detection, and Markdown validation:
+
+```bash
+bun run test src/lib/server/translations
+# Optional real 90-second timeout check (adds about 95 seconds):
+TRANSLATION_TEST_TIMEOUT=1 bun run test src/lib/server/translations
+```
+
+Run database tests only against an isolated local Supabase project with a
+different project ID and unused ports. Copy `supabase/` to a temporary workdir,
+adjust its `config.toml`, then start and initialize that project with
+`bunx supabase --workdir <temporary-directory> ...`. Apply all schemas and
+fixtures there and generate types from that instance; do not reset your normal
+local database or use a remote instance for these tests.
+
+```bash
+TRANSLATION_TEST_DB_URL=postgresql://postgres:postgres@127.0.0.1:55322/postgres \
+  bun run test scripts/translations
+```
+
+These tests reject remote hosts and the usual local database port `54322`.
+They remove only the temporary translation rows they create. Without this
+variable, database integration tests are skipped.
+
+For browser and production checks, run `bun scripts/translations/mock-ai.ts`.
+Point the app at the isolated database and set the three AI values to
+`local-test`, `http://127.0.0.1:4318/v1`, and `local-test`, respectively. Configure
+responses with `POST http://127.0.0.1:4318/__control`:
+
+```json
+{
+  "Exact original title": { "text": "翻译后的标题", "delayMs": 3000 },
+  "Exact original body": { "text": "翻译后的正文", "delayMs": 10000 }
+}
+```
+
+Each response also accepts `status` (default `200`) and `finishReason` (default
+`stop`). `GET /__calls` returns the requested contexts; posting new controls
+clears the call history. Unconfigured contexts fail explicitly. Use delays to
+observe independent Suspense completion, then reload after the response to
+verify a static translated shell with no new model calls. Check original and
+translated outlines/copy, hidden posts, build/prefetch call counts, and reuse
+after a process restart. Real provider translation quality still needs review
+after filling in the actual configuration.
 
 ## Project Structure
 
