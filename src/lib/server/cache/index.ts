@@ -4,6 +4,7 @@ export const CACHE_TAGS = {
   posts: "blog:posts",
   thoughts: "blog:thoughts",
   events: "blog:events",
+  translations: "translation:all",
   post: (id: string) => `blog:posts:${id}`,
 } as const;
 

@@ -22,6 +22,7 @@ export async function POST() {
       CACHE_TAGS.posts,
       CACHE_TAGS.thoughts,
       CACHE_TAGS.events,
+      CACHE_TAGS.translations,
     ]);
 
     posts.forEach((post) => {

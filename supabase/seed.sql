@@ -2,6 +2,16 @@ INSERT INTO storage.buckets (id, name, public)
 VALUES ('images', 'images', true)
 ON CONFLICT (id) DO NOTHING;
 
+-- Standalone translation fixtures do not warm the post preview's cold path.
+INSERT INTO public.translation_cache (key, context, target_locale, status, result, model, generated_at)
+VALUES (
+  'translation:v1:' || encode(extensions.digest('Translation cache fixture.', 'sha256'), 'hex') || ':zh-CN',
+  'Translation cache fixture.', 'zh-CN', 'translated', '翻译缓存示例。', 'fixture', now()
+), (
+  'translation:v1:' || encode(extensions.digest('Translation cache fixture.', 'sha256'), 'hex') || ':en-US',
+  'Translation cache fixture.', 'en-US', 'unchanged', 'Translation cache fixture.', 'fixture', now()
+);
+
 INSERT INTO public.posts (id, title, content, author, status, published_at)
 VALUES (
   'cf44cb54-1d65-446b-bca9-8b3f6158484f',
