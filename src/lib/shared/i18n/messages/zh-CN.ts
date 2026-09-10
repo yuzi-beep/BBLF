@@ -1,4 +1,4 @@
-import { defineDictionary } from "./messages.helper";
+import { defineDictionary } from "./default";
 
 export default defineDictionary({
   meta: {
@@ -124,6 +124,13 @@ export default defineDictionary({
     notFoundDescription: "抱歉，你访问的文章不存在或已被删除。",
     backToPosts: "返回文章列表",
     tableOfContents: "目录",
+  },
+  translation: {
+    original: "原文",
+    showOriginal: "显示原文",
+    showTranslation: "显示译文",
+    pending: "翻译中…",
+    unavailable: "翻译暂不可用",
   },
   thoughtCard: {
     preview: "预览",

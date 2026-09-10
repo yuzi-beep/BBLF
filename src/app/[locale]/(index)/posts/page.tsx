@@ -1,16 +1,17 @@
+import { groupBy } from "es-toolkit";
 import type { Metadata } from "next";
 import { cacheTag } from "next/cache";
 
-import PostCard from "#components/features/posts/PostCard";
-import Stack from "#components/ui/Stack";
+import PostCard from "#components/features/posts/post-card.component";
+import Stack from "#components/ui/stack.component";
 import { useT } from "#i18n";
 import { CACHE_TAGS } from "#lib/server/cache";
 import { getScopedT } from "#lib/server/i18n";
 import { fetchPosts } from "#lib/shared/services";
-import { makeStaticClient } from "#lib/shared/supabase";
-import { formatTime } from "#lib/shared/utils";
+import { makeStaticClient } from "#lib/shared/supabase.client";
+import { formatTime } from "#lib/shared/utils/date.helper";
 
-import CollectionBody from "../_components/CollectionBody";
+import CollectionBody from "../_components/collection-body.component";
 
 export async function generateMetadata(): Promise<Metadata> {
   const t = await getScopedT((d) => d.indexPosts);
@@ -41,19 +42,10 @@ function PostsPageContent({
   const totalPosts = posts.length;
   const totalCharacters = posts.reduce((acc, p) => acc + p.content.length, 0);
 
-  const groupedPosts: Record<string, (typeof posts)[number][]> = {};
-
-  posts.forEach((post) => {
-    const year = formatTime(post.published_at, "YYYY", "Unknown");
-
-    if (!groupedPosts[year]) {
-      groupedPosts[year] = [];
-    }
-    groupedPosts[year].push(post);
-  });
-
-  // Sort years descending
-  const sortedYears = Object.keys(groupedPosts).sort((a, b) => {
+  const groupedPosts = groupBy(posts, (post) =>
+    formatTime(post.published_at, "YYYY", "Unknown"),
+  );
+  const sortedYears = Object.entries(groupedPosts).sort(([a], [b]) => {
     if (a === "Unknown") return 1;
     if (b === "Unknown") return -1;
     return Number(b) - Number(a);
@@ -73,19 +65,19 @@ function PostsPageContent({
       })}
     >
       <div className="space-y-6">
-        {sortedYears.map((year) => (
+        {sortedYears.map(([year, yearPosts]) => (
           <section key={year}>
             {/* Year Title */}
             <h2 className="mb-3 flex items-center gap-2 text-2xl font-bold text-gray-800 dark:text-gray-200">
               {year === "Unknown" ? tCommon((d) => d.unknownYear) : year}
               <span className="text-sm font-normal text-gray-500 dark:text-gray-400">
-                ({groupedPosts[year]?.length})
+                ({yearPosts.length})
               </span>
             </h2>
 
             {/* List of posts for the year */}
             <Stack y>
-              {groupedPosts[year]?.map((post) => (
+              {yearPosts.map((post) => (
                 <PostCard key={post.id} post={post} />
               ))}
             </Stack>

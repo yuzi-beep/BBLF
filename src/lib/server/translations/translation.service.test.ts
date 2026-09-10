@@ -1,0 +1,320 @@
+import { afterAll, beforeEach, expect, mock, test } from "bun:test";
+
+import { serve } from "bun";
+
+import type { Database } from "#types/supabase";
+
+type Row = Database["public"]["Tables"]["translation_cache"]["Row"];
+const rows = new Map<string, Row>();
+const tags: string[] = [];
+let databaseAvailable = true;
+let persist = true;
+let calls = 0;
+let reply = "你好";
+let finishReason = "stop";
+let responseStatus = 200;
+let responseDelay = 0;
+
+await mock.module("server-only", () => ({}));
+await mock.module("next/cache", () => ({
+  cacheLife: () => {},
+  cacheTag: (...values: string[]) => tags.push(...values),
+}));
+await mock.module("./translation-storage.service", () => ({
+  readTranslationRows: async (keys: string[]) => {
+    if (!databaseAvailable) throw new Error("Database unavailable");
+    return keys.flatMap((key) => (rows.has(key) ? [rows.get(key)] : []));
+  },
+  storedTranslation: (row: Row | undefined) =>
+    row?.status === "translated"
+      ? { status: "translated", text: row.result }
+      : row?.status === "unchanged"
+        ? { status: "unchanged" }
+        : { status: "missing" },
+  claimTranslation: async (
+    key: string,
+    input: { context: string; targetLocale: string },
+    token: string,
+  ) => {
+    if (rows.has(key)) return false;
+    rows.set(key, {
+      key,
+      context: input.context,
+      target_locale: input.targetLocale,
+      status: "pending",
+      claim_token: token,
+      lease_until: new Date(Date.now() + 120_000).toISOString(),
+      result: null,
+      model: null,
+      generated_at: null,
+      retry_after: null,
+    });
+    return true;
+  },
+  finishTranslation: async (
+    key: string,
+    token: string,
+    result: { status: string; text: string; model: string },
+  ) => {
+    const row = rows.get(key);
+    if (!persist || !row || row.claim_token !== token) return false;
+    rows.set(key, {
+      ...row,
+      status: result.status,
+      result: result.status === "failed" ? null : result.text,
+      model: result.model,
+    });
+    return true;
+  },
+}));
+
+const server = serve({
+  hostname: "127.0.0.1",
+  port: 0,
+  idleTimeout: 120,
+  async fetch() {
+    calls++;
+    if (responseDelay) await Bun.sleep(responseDelay);
+    if (responseStatus !== 200)
+      return Response.json(
+        { error: { message: "Controlled failure" } },
+        { status: responseStatus },
+      );
+    return Response.json({
+      choices: [
+        {
+          message: { role: "assistant", content: reply },
+          finish_reason: finishReason,
+        },
+      ],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    });
+  },
+});
+const environment = {
+  TRANSLATION_AI_API_KEY: process.env.TRANSLATION_AI_API_KEY,
+  TRANSLATION_AI_BASE_URL: process.env.TRANSLATION_AI_BASE_URL,
+  TRANSLATION_AI_MODEL: process.env.TRANSLATION_AI_MODEL,
+};
+const { ensureTranslation, readTranslations } =
+  await import("./translation.service");
+const {
+  translationKey,
+  pendingTranslationTag,
+  needsNoTranslation,
+  validTranslation,
+} = await import("./translation.helper");
+const input = { context: "Hello", targetLocale: "zh-CN" } as const;
+
+beforeEach(() => {
+  rows.clear();
+  tags.length = 0;
+  databaseAvailable = true;
+  persist = true;
+  calls = 0;
+  reply = "你好";
+  finishReason = "stop";
+  responseStatus = 200;
+  responseDelay = 0;
+  process.env.TRANSLATION_AI_API_KEY = "local-test";
+  process.env.TRANSLATION_AI_BASE_URL = `${server.url}v1`;
+  process.env.TRANSLATION_AI_MODEL = "local-test";
+});
+afterAll(() => {
+  void server.stop(true);
+  for (const [key, value] of Object.entries(environment)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+});
+
+test("raw context and locale determine stable independent keys", () => {
+  expect(translationKey(input)).toMatch(/^translation:v1:[a-f0-9]{64}:zh-CN$/);
+  expect(translationKey({ ...input, context: "Hello " })).not.toBe(
+    translationKey(input),
+  );
+  expect(translationKey({ ...input, targetLocale: "en-US" })).not.toBe(
+    translationKey(input),
+  );
+});
+
+test("missing reads attach pending tags; persisted results no longer attach them", async () => {
+  const body = { ...input, context: "World" };
+  expect(await readTranslations([input, body])).toEqual([
+    { status: "missing" },
+    { status: "missing" },
+  ]);
+  expect(tags).toEqual([
+    "translation:all",
+    pendingTranslationTag(translationKey(input)),
+    pendingTranslationTag(translationKey(body)),
+  ]);
+  await Promise.all([ensureTranslation(input), ensureTranslation(body)]);
+  await ensureTranslation(input);
+  expect(calls).toBe(2);
+  tags.length = 0;
+  expect(
+    (await readTranslations([input, body])).every(
+      (result) => result.status === "translated",
+    ),
+  ).toBe(true);
+  expect(tags).toEqual(["translation:all"]);
+});
+
+test("a stale missing read rechecks storage without another model call", async () => {
+  await readTranslations([input]);
+  await ensureTranslation(input);
+  expect((await ensureTranslation(input)).status).toBe("translated");
+  expect(calls).toBe(1);
+});
+
+test("partial failure does not discard a successful unit", async () => {
+  await ensureTranslation(input);
+  responseStatus = 500;
+  expect((await ensureTranslation({ ...input, context: "Other" })).status).toBe(
+    "unavailable",
+  );
+  expect(calls).toBe(2);
+  expect(await readTranslations([input])).toEqual([
+    { status: "translated", text: "你好" },
+  ]);
+});
+
+test("concurrent callers reuse one claim and generation", async () => {
+  responseDelay = 50;
+  const results = await Promise.all([
+    ensureTranslation(input),
+    ensureTranslation(input),
+    ensureTranslation(input),
+  ]);
+  expect(results.every((result) => result.status === "translated")).toBe(true);
+  expect(calls).toBe(1);
+});
+
+test("stored translations remain readable without model configuration", async () => {
+  await ensureTranslation(input);
+  delete process.env.TRANSLATION_AI_API_KEY;
+  delete process.env.TRANSLATION_AI_BASE_URL;
+  delete process.env.TRANSLATION_AI_MODEL;
+  expect(await readTranslations([input])).toEqual([
+    { status: "translated", text: "你好" },
+  ]);
+  expect(await ensureTranslation(input)).toEqual({
+    status: "translated",
+    text: "你好",
+  });
+  expect(calls).toBe(1);
+});
+
+test("unpersisted results never become successful output", async () => {
+  persist = false;
+  expect((await ensureTranslation(input)).status).toBe("unavailable");
+});
+
+test("unavailable database and missing configuration do not invoke AI", async () => {
+  databaseAvailable = false;
+  expect((await ensureTranslation(input)).status).toBe("unavailable");
+  databaseAvailable = true;
+  delete process.env.TRANSLATION_AI_API_KEY;
+  expect((await ensureTranslation(input)).status).toBe("unavailable");
+  expect(calls).toBe(0);
+});
+
+test.each(["length", "content-filter", "error"])(
+  "incomplete finish reason %s is not persisted as success",
+  async (reason) => {
+    finishReason = reason;
+    expect((await ensureTranslation(input)).status).toBe("unavailable");
+    expect(rows.get(translationKey(input))?.status).toBe("failed");
+  },
+);
+
+test("empty and structurally damaged outputs fail; identical output is unchanged", async () => {
+  reply = "";
+  expect((await ensureTranslation(input)).status).toBe("unavailable");
+  expect(
+    (await ensureTranslation({ ...input, context: "## Hello" })).status,
+  ).toBe("unavailable");
+  reply = "你好";
+  expect(
+    (await ensureTranslation({ ...input, context: "### Hello" })).status,
+  ).toBe("unavailable");
+  rows.clear();
+  reply = "Hello";
+  expect(await ensureTranslation(input)).toEqual({ status: "unchanged" });
+});
+
+test.skipIf(process.env.TRANSLATION_TEST_TIMEOUT !== "1")(
+  "a model request exceeding 90 seconds fails without retry",
+  async () => {
+    responseDelay = 95_000;
+    const started = Date.now();
+    expect(await ensureTranslation(input)).toEqual({ status: "unavailable" });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(89_000);
+    expect(Date.now() - started).toBeLessThan(94_000);
+    expect(calls).toBe(1);
+    expect(rows.get(translationKey(input))?.status).toBe("failed");
+  },
+  100_000,
+);
+
+test("Markdown code, destinations, GFM and directive structure remain intact", () => {
+  const source =
+    '## Hello\n\n[Link](https://example.com) and `code`\n\n```js\nconst x = 1;\n```\n\n- [x] Done\n\n| A | B |\n| - | - |\n| C | D |\n\n::card{title="Keep" tone="info"}';
+  const output = source
+    .replace("Hello", "你好")
+    .replace("Link", "链接")
+    .replace("Done", "完成");
+  expect(validTranslation(source, output)).toBe(true);
+  for (const damaged of [
+    output.replace("example.com", "evil.test"),
+    output.replace("const x = 1", "const x = 2"),
+    output.replace('tone="info"', 'tone="error"'),
+    output.replace("##", "###"),
+    output.replace("[x]", "[ ]"),
+    output.split("\n\n").slice(0, -1).join("\n\n"),
+  ])
+    expect(validTranslation(source, damaged)).toBe(false);
+});
+
+test("short and mixed text require translation; code does not influence detection", () => {
+  expect(needsNoTranslation({ ...input, context: "你好" })).toBe(false);
+  const english =
+    "This is a detailed article about the design of a search experience. The reader should be able to find the information they need without unnecessary steps or complicated interactions.";
+  expect(needsNoTranslation({ context: english, targetLocale: "en-US" })).toBe(
+    true,
+  );
+  expect(
+    needsNoTranslation({ context: `${english} 中文`, targetLocale: "en-US" }),
+  ).toBe(false);
+  for (const label of [
+    "![中文](https://example.com/image.png)",
+    '[More](https://example.com "中文")',
+    '![More](https://example.com/image.png "中文")',
+    "![中文][image]\n\n[image]: https://example.com/image.png",
+  ]) {
+    expect(
+      needsNoTranslation({
+        context: `${english}\n\n${label}`,
+        targetLocale: "en-US",
+      }),
+    ).toBe(false);
+  }
+  expect(
+    needsNoTranslation({
+      context: `\`\`\`\n${english}\n\`\`\``,
+      targetLocale: "en-US",
+    }),
+  ).toBe(false);
+  const simplified =
+    "这篇文章介绍如何设计清晰易用的搜索界面，让读者快速找到需要的信息。我们需要关注搜索过程中的每一个细节，减少不必要的操作，并提供明确的反馈。只有认真理解读者的实际需求，才能持续改善网站的使用体验，让信息查找变得更加简单方便。";
+  expect(
+    needsNoTranslation({ context: simplified, targetLocale: "zh-CN" }),
+  ).toBe(true);
+  expect(
+    needsNoTranslation({
+      context: simplified.replace("这篇文章", "這篇文章"),
+      targetLocale: "zh-CN",
+    }),
+  ).toBe(false);
+});
